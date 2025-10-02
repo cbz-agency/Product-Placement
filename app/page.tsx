@@ -12,7 +12,12 @@ import { Label } from "@/components/ui/label"
 import { Textarea } from "@/components/ui/textarea"
 
 export default function ProductPlacementTool() {
-  const [uploadedImage, setUploadedImage] = useState<string | null>(null)
+  // Product & Model uploads
+  const [productImage, setProductImage] = useState<string | null>(null)
+  const [modelImage, setModelImage] = useState<string | null>(null)
+  const [promptText, setPromptText] = useState("")
+  // Result
+  const [uploadedImage, setUploadedImage] = useState<string | null>(null) // legacy (kept for minimal refactor)
   const [mockupImage, setMockupImage] = useState<string | null>(null)
   const [isGenerating, setIsGenerating] = useState(false)
   const [isDragging, setIsDragging] = useState(false)
@@ -25,11 +30,22 @@ export default function ProductPlacementTool() {
     background: "",
   })
 
-  const handleFileUpload = useCallback((file: File) => {
+  const handleProductFileUpload = useCallback((file: File) => {
     if (file && file.type.startsWith("image/")) {
       const reader = new FileReader()
       reader.onload = (e) => {
-        setUploadedImage(e.target?.result as string)
+        setProductImage(e.target?.result as string)
+        setMockupImage(null)
+      }
+      reader.readAsDataURL(file)
+    }
+  }, [])
+
+  const handleModelFileUpload = useCallback((file: File) => {
+    if (file && file.type.startsWith("image/")) {
+      const reader = new FileReader()
+      reader.onload = (e) => {
+        setModelImage(e.target?.result as string)
         setMockupImage(null)
       }
       reader.readAsDataURL(file)
@@ -41,9 +57,9 @@ export default function ProductPlacementTool() {
       e.preventDefault()
       setIsDragging(false)
       const file = e.dataTransfer.files[0]
-      handleFileUpload(file)
+      handleProductFileUpload(file)
     },
-    [handleFileUpload],
+    [handleProductFileUpload],
   )
 
   const handleDragOver = useCallback((e: React.DragEvent) => {
@@ -56,24 +72,69 @@ export default function ProductPlacementTool() {
     setIsDragging(false)
   }, [])
 
-  const handleInputChange = useCallback(
+  const handleProductInputChange = useCallback(
     (e: React.ChangeEvent<HTMLInputElement>) => {
       const file = e.target.files?.[0]
-      if (file) handleFileUpload(file)
+      if (file) handleProductFileUpload(file)
     },
-    [handleFileUpload],
+    [handleProductFileUpload],
   )
 
+  // Simple client-side compositing as a fallback (no AI): overlay product onto model
+  const compositeClientSide = useCallback(async () => {
+    if (!productImage || !modelImage) return null
+    const load = (src: string) => new Promise<HTMLImageElement>((resolve, reject) => {
+      const img = new Image()
+      img.onload = () => resolve(img)
+      img.onerror = reject
+      img.src = src
+    })
+
+    const [modelImg, productImg] = await Promise.all([load(modelImage), load(productImage)])
+    const size = 1024
+    const canvas = document.createElement('canvas')
+    canvas.width = size
+    canvas.height = size
+    const ctx = canvas.getContext('2d')!
+
+    // Draw model to cover canvas
+    ctx.fillStyle = '#fff'
+    ctx.fillRect(0, 0, size, size)
+    // Fit model image preserving aspect
+    const modelRatio = Math.min(size / modelImg.width, size / modelImg.height)
+    const mw = Math.round(modelImg.width * modelRatio)
+    const mh = Math.round(modelImg.height * modelRatio)
+    const mx = Math.round((size - mw) / 2)
+    const my = Math.round((size - mh) / 2)
+    ctx.drawImage(modelImg, mx, my, mw, mh)
+
+    // Overlay product centered at ~45% width
+    const productTargetW = Math.round(size * 0.45)
+    const pr = productTargetW / productImg.width
+    const pw = productTargetW
+    const ph = Math.round(productImg.height * pr)
+    const px = Math.round((size - pw) / 2)
+    const py = Math.round((size - ph) / 2)
+    ctx.drawImage(productImg, px, py, pw, ph)
+
+    return canvas.toDataURL('image/png')
+  }, [productImage, modelImage])
+
   const generateMockup = useCallback(async () => {
-    if (!uploadedImage) return
+    if (!productImage || !modelImage) return
 
     setIsGenerating(true)
     try {
-      // For MVP, we only send textual config to avoid large payloads.
+      // Send both images and prompt to the backend (OpenAI path if available)
       const res = await fetch('/api/generate', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ config: modelConfig }),
+        body: JSON.stringify({
+          config: modelConfig,
+          productImage,
+          modelImage,
+          prompt: promptText,
+        }),
       })
 
       if (!res.ok) throw new Error('Failed to generate mockup')
@@ -81,10 +142,17 @@ export default function ProductPlacementTool() {
       setMockupImage(data?.image ?? null)
     } catch (err) {
       console.error('generateMockup error', err)
+      // Fallback to client-side composite when backend is unavailable or restricted
+      try {
+        const composite = await compositeClientSide()
+        if (composite) setMockupImage(composite)
+      } catch (e) {
+        console.error('client-side composite failed', e)
+      }
     } finally {
       setIsGenerating(false)
     }
-  }, [uploadedImage, modelConfig])
+  }, [productImage, modelImage, modelConfig, promptText, compositeClientSide])
 
   const downloadMockup = useCallback(() => {
     if (!mockupImage) return
@@ -111,7 +179,7 @@ export default function ProductPlacementTool() {
           <p className="text-muted-foreground text-lg">Upload your product and customize your model</p>
         </motion.div>
 
-        {/* Upload Zone */}
+        {/* Upload Zone: Product */}
         <motion.div
           initial={{ opacity: 0, y: 20 }}
           animate={{ opacity: 1, y: 0 }}
@@ -125,14 +193,14 @@ export default function ProductPlacementTool() {
               className={`space-y-4 ${isDragging ? "opacity-50" : ""}`}
             >
               <div className="flex flex-col items-center justify-center space-y-4">
-                {uploadedImage ? (
+                {productImage ? (
                   <motion.div
                     initial={{ scale: 0.8, opacity: 0 }}
                     animate={{ scale: 1, opacity: 1 }}
                     className="relative w-full max-w-xs aspect-square rounded-lg overflow-hidden border-2 border-primary/30 shadow-lg shadow-primary/10"
                   >
                     <img
-                      src={uploadedImage || "/placeholder.svg"}
+                      src={productImage || "/placeholder.svg"}
                       alt="Uploaded product"
                       className="w-full h-full object-contain bg-secondary"
                     />
@@ -145,7 +213,7 @@ export default function ProductPlacementTool() {
 
                 <div className="text-center space-y-2">
                   <p className="text-lg font-medium text-foreground">
-                    {uploadedImage ? "Product uploaded!" : "Drop your product image here"}
+                    {productImage ? "Product uploaded!" : "Drop your product image here"}
                   </p>
                   <p className="text-sm text-muted-foreground">PNG format preferred • Max 10MB</p>
                 </div>
@@ -158,14 +226,75 @@ export default function ProductPlacementTool() {
                   >
                     <span>
                       <ImageIcon className="w-4 h-4 mr-2" />
-                      {uploadedImage ? "Change Image" : "Browse Files"}
+                      {productImage ? "Change Image" : "Browse Files"}
                     </span>
                   </Button>
                   <input
                     id="file-upload"
                     type="file"
                     accept="image/*"
-                    onChange={handleInputChange}
+                    onChange={handleProductInputChange}
+                    className="hidden"
+                  />
+                </label>
+              </div>
+            </div>
+          </Card>
+        </motion.div>
+
+        {/* Upload Zone: Model */}
+        <motion.div
+          initial={{ opacity: 0, y: 20 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ duration: 0.6, delay: 0.15 }}
+        >
+          <Card className="glass p-8 border-2 border-dashed hover:border-primary/70 transition-all duration-300 hover:shadow-lg hover:shadow-primary/20">
+            <div className="space-y-4">
+              <div className="flex flex-col items-center justify-center space-y-4">
+                {modelImage ? (
+                  <motion.div
+                    initial={{ scale: 0.8, opacity: 0 }}
+                    animate={{ scale: 1, opacity: 1 }}
+                    className="relative w-full max-w-xs aspect-square rounded-lg overflow-hidden border-2 border-primary/30 shadow-lg shadow-primary/10"
+                  >
+                    <img
+                      src={modelImage || "/placeholder.svg"}
+                      alt="Uploaded model"
+                      className="w-full h-full object-cover bg-secondary"
+                    />
+                  </motion.div>
+                ) : (
+                  <div className="w-24 h-24 rounded-full bg-gradient-to-br from-primary/20 via-secondary/20 to-accent/20 flex items-center justify-center">
+                    <Upload className="w-12 h-12 text-primary" />
+                  </div>
+                )}
+
+                <div className="text-center space-y-2">
+                  <p className="text-lg font-medium text-foreground">
+                    {modelImage ? "Model uploaded!" : "Upload or browse a model image"}
+                  </p>
+                  <p className="text-sm text-muted-foreground">JPG/PNG • Max 10MB</p>
+                </div>
+
+                <label htmlFor="model-upload">
+                  <Button
+                    variant="outline"
+                    className="cursor-pointer hover:bg-gradient-to-r hover:from-primary hover:to-secondary hover:text-primary-foreground transition-all duration-300 bg-transparent border-primary/30"
+                    asChild
+                  >
+                    <span>
+                      <ImageIcon className="w-4 h-4 mr-2" />
+                      {modelImage ? "Change Image" : "Browse Files"}
+                    </span>
+                  </Button>
+                  <input
+                    id="model-upload"
+                    type="file"
+                    accept="image/*"
+                    onChange={(e) => {
+                      const file = e.target.files?.[0]
+                      if (file) handleModelFileUpload(file)
+                    }}
                     className="hidden"
                   />
                 </label>
@@ -176,7 +305,7 @@ export default function ProductPlacementTool() {
 
         {/* Model Customization Form */}
         <AnimatePresence>
-          {uploadedImage && !mockupImage && (
+          {(productImage && modelImage) && !mockupImage && (
             <motion.div
               initial={{ opacity: 0, y: 20 }}
               animate={{ opacity: 1, y: 0 }}
@@ -255,6 +384,19 @@ export default function ProductPlacementTool() {
                     className="bg-background/50 border-primary/20 focus:border-primary focus:ring-primary/20 min-h-[80px] resize-none"
                   />
                 </div>
+
+                <div className="space-y-2">
+                  <Label htmlFor="prompt" className="text-sm font-medium">
+                    Optional Prompt (extra guidance)
+                  </Label>
+                  <Textarea
+                    id="prompt"
+                    placeholder="Describe pose, hands, lighting, framing, mood, etc."
+                    value={promptText}
+                    onChange={(e) => setPromptText(e.target.value)}
+                    className="bg-background/50 border-primary/20 focus:border-primary focus:ring-primary/20 min-h-[80px] resize-none"
+                  />
+                </div>
               </Card>
             </motion.div>
           )}
@@ -262,7 +404,7 @@ export default function ProductPlacementTool() {
 
         {/* Generate Button */}
         <AnimatePresence>
-          {uploadedImage && !mockupImage && (
+          {(productImage && modelImage) && !mockupImage && (
             <motion.div
               initial={{ opacity: 0, scale: 0.9 }}
               animate={{ opacity: 1, scale: 1 }}
@@ -339,6 +481,9 @@ export default function ProductPlacementTool() {
                   onClick={() => {
                     setUploadedImage(null)
                     setMockupImage(null)
+                    setProductImage(null)
+                    setModelImage(null)
+                    setPromptText("")
                     setModelConfig({
                       gender: "",
                       age: "",
