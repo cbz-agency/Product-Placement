@@ -64,19 +64,26 @@ export default function ProductPlacementTool() {
     [handleFileUpload],
   )
 
-  const generateMockup = useCallback(() => {
+  const generateMockup = useCallback(async () => {
     if (!uploadedImage) return
 
     setIsGenerating(true)
-    setTimeout(() => {
-      // TODO: Call API with modelConfig and uploadedImage
-      // const response = await fetch('/api/generate', {
-      //   method: 'POST',
-      //   body: JSON.stringify({ image: uploadedImage, config: modelConfig })
-      // })
-      setMockupImage(uploadedImage)
+    try {
+      // For MVP, we only send textual config to avoid large payloads.
+      const res = await fetch('/api/generate', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ config: modelConfig }),
+      })
+
+      if (!res.ok) throw new Error('Failed to generate mockup')
+      const data = await res.json()
+      setMockupImage(data?.image ?? null)
+    } catch (err) {
+      console.error('generateMockup error', err)
+    } finally {
       setIsGenerating(false)
-    }, 2000)
+    }
   }, [uploadedImage, modelConfig])
 
   const downloadMockup = useCallback(() => {
